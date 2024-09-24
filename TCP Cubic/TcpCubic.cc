@@ -72,6 +72,11 @@ void TcpCubic::recalculateSlowStartThreshold()
 
 void TcpCubic::processRexmitTimer(TcpEventCode& event)
 {
+    // deflate the congestion window to prevent the new ssthresh calculation to use the inflated value
+    if(state->lossRecovery){
+        state->snd_cwnd = state->ssthresh;
+    } 
+    
     TcpBaseAlg::processRexmitTimer(event);
 
     if (event == TCP_E_ABORT)
@@ -342,7 +347,7 @@ void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
         }
     }
     // srg c v end
-    
+
 
     const TcpSegmentTransmitInfoList::Item *found = state->regions.get(firstSeqAcked);
 
