@@ -262,7 +262,87 @@ void TcpCubic::performSSCA()
 
 void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
 {
-    TcpBaseAlg::receivedDataAck(firstSeqAcked);
+    // TcpBaseAlg::receivedDataAck(firstSeqAcked) resets retxtimer every time, 
+    // for partial acks we only want them reset for the first partial ack
+    // so c + v for everything else in the parent function and add a check if the algorithm is in recovery
+
+    // handling of retransmission timer: if the ACK is for the last segment sent
+    // (no data in flight), cancel the timer, otherwise restart the timer
+    // with the current RTO value.
+    // but don't do this for partial acks
+    //
+    if (state->snd_una == state->snd_max) {
+        if (rexmitTimer->isScheduled()) {
+            EV_INFO << "ACK acks all outstanding segments, cancel REXMIT timer\n";
+            cancelEvent(rexmitTimer);
+        }
+        else
+            EV_INFO << "There were no outstanding segments, nothing new in this ACK.\n";
+    }
+    else if (!state->lossRecovery ){
+        // only do this if we are not in loss recovery
+        EV_INFO << "ACK acks some but not all outstanding segments ("
+                << (state->snd_max - state->snd_una) << " bytes outstanding), but not in loss recovery"
+                << "restarting REXMIT timer\n";
+        cancelEvent(rexmitTimer);
+        startRexmitTimer();
+    }
+
+
+    // strg c v
+    if (!state->ts_enabled) {
+        // if round-trip time measurement is running, check if rtseq has been acked
+        if (state->rtseq_sendtime != 0 && seqLess(state->rtseq, state->snd_una)) {
+            // print value
+            EV_DETAIL << "Round-trip time measured on rtseq=" << state->rtseq << ": "
+                      << floor((simTime() - state->rtseq_sendtime) * 1000 + 0.5) << "ms\n";
+
+            rttMeasurementComplete(state->rtseq_sendtime, simTime()); // update RTT variables with new value
+
+            // measurement finished
+            state->rtseq_sendtime = 0;
+        }
+    }
+
+    //
+  
+    //
+    // handling of PERSIST timer:
+    // If data sender received a zero-sized window, check retransmission timer.
+    //  If retransmission timer is not scheduled, start PERSIST timer if not already
+    //  running.
+    //
+    // If data sender received a non zero-sized window, check PERSIST timer.
+    //  If PERSIST timer is scheduled, cancel PERSIST timer.
+    //INFO (TcpConnection)i7refbottle.snd.tcp.conn-6: Duplicate ACK #3
+    if (state->snd_wnd == 0) { // received zero-sized window?
+        if (rexmitTimer->isScheduled()) {
+            if (persistTimer->isScheduled()) {
+                EV_INFO << "Received zero-sized window and REXMIT timer is running therefore PERSIST timer is canceled.\n";
+                cancelEvent(persistTimer);
+                state->persist_factor = 0;
+            }
+            else
+                EV_INFO << "Received zero-sized window and REXMIT timer is running therefore PERSIST timer is not started.\n";
+        }
+        else {
+            if (!persistTimer->isScheduled()) {
+                EV_INFO << "Received zero-sized window therefore PERSIST timer is started.\n";
+                conn->scheduleAfter(state->persist_timeout, persistTimer);
+            }
+            else
+                EV_INFO << "Received zero-sized window and PERSIST timer is already running.\n";
+        }
+    }
+    else { // received non zero-sized window?
+        if (persistTimer->isScheduled()) {
+            EV_INFO << "Received non zero-sized window therefore PERSIST timer is canceled.\n";
+            cancelEvent(persistTimer);
+            state->persist_factor = 0;
+        }
+    }
+    // srg c v end
+    
 
     const TcpSegmentTransmitInfoList::Item *found = state->regions.get(firstSeqAcked);
 
