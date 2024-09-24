@@ -45,7 +45,7 @@ void TcpCubic::initialize()
 {
     TcpBaseAlg::initialize();
     cubic_reset();
-    state->c_litle_b = 0.2;
+    state->c_litle_b = 0.3;
     state->c_big_C = 0.4;
     state->c_tcp_friendliness = 1;
     state->c_fast_convergence = 1;
