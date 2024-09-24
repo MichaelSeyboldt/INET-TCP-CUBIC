@@ -27,6 +27,7 @@ struct TcpCubicStateVariables extends TcpBaseAlgStateVariables
     TcpSegmentTransmitInfoList regions;
 
     uint32_t ssthresh = 4294967295; ///< slow start threshold
+    bool inhibitRecovery = false; // for wrap around protection
 
     ///cubic variables
     uint32_t c_w_last_max;

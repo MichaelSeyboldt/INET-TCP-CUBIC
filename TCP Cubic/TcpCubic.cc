@@ -76,7 +76,7 @@ void TcpCubic::processRexmitTimer(TcpEventCode& event)
     if(state->lossRecovery){
         state->snd_cwnd = state->ssthresh;
     } 
-    
+
     TcpBaseAlg::processRexmitTimer(event);
 
     if (event == TCP_E_ABORT)
@@ -104,6 +104,7 @@ void TcpCubic::processRexmitTimer(TcpEventCode& event)
             << ", ssthresh=" << state->ssthresh << "\n";
 
     state->afterRto = true;
+    state->inhibitRecovery  = true;
 
     conn->retransmitOneSegment(true);
 
@@ -366,6 +367,11 @@ void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
         }
     }
 
+    // reset inhibiting the next recovery pahse
+    if(state->inhibitRecovery && !state->lossRecovery && seqGE(state->snd_una, state->recover + state->snd_mss)){
+        state->inhibitRecovery = false;
+    }
+
     if (state->lossRecovery) {
         if (seqGE(state->snd_una - 1, state->recover)) {
             // Exit Fast Recovery: deflating cwnd
@@ -453,7 +459,11 @@ void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
         // data have been sent and acked, the sequence space does not wrap and
         // falsely indicate that Fast Recovery should not be entered (Section 3,
         // step 1, last paragraph)."
-        state->recover = (state->snd_una - 2);
+        //
+        // this should not be done after RTOs
+        if (!state->inhibitRecovery){
+            state->recover = (state->snd_una - 2);
+        }
 
     }
 
