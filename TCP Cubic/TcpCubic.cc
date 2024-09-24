@@ -49,6 +49,7 @@ void TcpCubic::initialize()
     state->c_big_C = 0.4;
     state->c_tcp_friendliness = 1;
     state->c_fast_convergence = 1;
+    _abc = true;
 }
 
 void TcpCubic::recalculateSlowStartThreshold() 
@@ -235,15 +236,19 @@ void TcpCubic::performSSCA()
 
         // perform Slow Start. RFC 2581: "During slow start, a TCP increments cwnd
         // by at most SMSS bytes for each ACK received that acknowledges new data."
-        state->snd_cwnd += state->snd_mss;
 
         // Note: we could increase cwnd based on the number of bytes being
         // acknowledged by each arriving ACK, rather than by the number of ACKs
         // that arrive. This is called "Appropriate Byte Counting" (ABC) and is
         // described in RFC 3465 (experimental).
         //
-        //        int bytesAcked = state->snd_una - firstSeqAcked;
-        //        state->snd_cwnd += bytesAcked;
+    
+        if(_abc){
+                   int bytesAcked = std::min(state->snd_una - firstSeqAcked,2*state->snd_mss);
+               state->snd_cwnd += bytesAcked;
+        }else{
+            state->snd_cwnd += state->snd_mss;
+        }
 
         conn->emit(cwndSignal, state->snd_cwnd);
         EV_DETAIL << "cwnd=" << state->snd_cwnd << "\n";
