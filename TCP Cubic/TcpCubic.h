@@ -25,6 +25,8 @@ class INET_API TcpCubic : public TcpBaseAlg
 
         TcpCubicStateVariables *& state; // alias to TCLAlgorithm's 'state'
 
+        bool _abc; // use apropriate byte counting in the slow start phase
+
         virtual TcpStateVariables *createStateVariables() override
         {
             return new TcpCubicStateVariables();
@@ -38,7 +40,7 @@ class INET_API TcpCubic : public TcpBaseAlg
 
         virtual void initialize() override;
 
-        void performSSCA();
+        void performSSCA(uint32_t firstSeqAcked);
 
         void cubic_reset();
 

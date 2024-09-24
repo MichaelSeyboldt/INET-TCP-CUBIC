@@ -45,10 +45,11 @@ void TcpCubic::initialize()
 {
     TcpBaseAlg::initialize();
     cubic_reset();
-    state->c_litle_b = 0.2;
+    state->c_litle_b = 0.3;
     state->c_big_C = 0.4;
     state->c_tcp_friendliness = 1;
     state->c_fast_convergence = 1;
+    _abc = true;
 }
 
 void TcpCubic::recalculateSlowStartThreshold() 
@@ -72,6 +73,11 @@ void TcpCubic::recalculateSlowStartThreshold()
 
 void TcpCubic::processRexmitTimer(TcpEventCode& event)
 {
+    // deflate the congestion window to prevent the new ssthresh calculation to use the inflated value
+    if(state->lossRecovery){
+        state->snd_cwnd = state->ssthresh;
+    } 
+
     TcpBaseAlg::processRexmitTimer(event);
 
     if (event == TCP_E_ABORT)
@@ -99,6 +105,7 @@ void TcpCubic::processRexmitTimer(TcpEventCode& event)
             << ", ssthresh=" << state->ssthresh << "\n";
 
     state->afterRto = true;
+    state->inhibitRecovery  = true;
 
     conn->retransmitOneSegment(true);
 
@@ -222,22 +229,26 @@ void TcpCubic::cubic_update()
 }
 
 
-void TcpCubic::performSSCA()
+void TcpCubic::performSSCA(uint32_t firstSeqAcked)
 {
     if (state->snd_cwnd <= state->ssthresh) {
         EV_DETAIL << "cwnd <= ssthresh: Slow Start: increasing cwnd by SMSS bytes to ";
 
         // perform Slow Start. RFC 2581: "During slow start, a TCP increments cwnd
         // by at most SMSS bytes for each ACK received that acknowledges new data."
-        state->snd_cwnd += state->snd_mss;
 
         // Note: we could increase cwnd based on the number of bytes being
         // acknowledged by each arriving ACK, rather than by the number of ACKs
         // that arrive. This is called "Appropriate Byte Counting" (ABC) and is
         // described in RFC 3465 (experimental).
         //
-        //        int bytesAcked = state->snd_una - firstSeqAcked;
-        //        state->snd_cwnd += bytesAcked;
+    
+        if(_abc){
+                   int bytesAcked = std::min(state->snd_una - firstSeqAcked,2*state->snd_mss);
+               state->snd_cwnd += bytesAcked;
+        }else{
+            state->snd_cwnd += state->snd_mss;
+        }
 
         conn->emit(cwndSignal, state->snd_cwnd);
         EV_DETAIL << "cwnd=" << state->snd_cwnd << "\n";
@@ -262,7 +273,87 @@ void TcpCubic::performSSCA()
 
 void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
 {
-    TcpBaseAlg::receivedDataAck(firstSeqAcked);
+    // TcpBaseAlg::receivedDataAck(firstSeqAcked) resets retxtimer every time, 
+    // for partial acks we only want them reset for the first partial ack
+    // so c + v for everything else in the parent function and add a check if the algorithm is in recovery
+
+    // handling of retransmission timer: if the ACK is for the last segment sent
+    // (no data in flight), cancel the timer, otherwise restart the timer
+    // with the current RTO value.
+    // but don't do this for partial acks
+    //
+    if (state->snd_una == state->snd_max) {
+        if (rexmitTimer->isScheduled()) {
+            EV_INFO << "ACK acks all outstanding segments, cancel REXMIT timer\n";
+            cancelEvent(rexmitTimer);
+        }
+        else
+            EV_INFO << "There were no outstanding segments, nothing new in this ACK.\n";
+    }
+    else if (!state->lossRecovery ){
+        // only do this if we are not in loss recovery
+        EV_INFO << "ACK acks some but not all outstanding segments ("
+                << (state->snd_max - state->snd_una) << " bytes outstanding), but not in loss recovery"
+                << "restarting REXMIT timer\n";
+        cancelEvent(rexmitTimer);
+        startRexmitTimer();
+    }
+
+
+    // strg c v
+    if (!state->ts_enabled) {
+        // if round-trip time measurement is running, check if rtseq has been acked
+        if (state->rtseq_sendtime != 0 && seqLess(state->rtseq, state->snd_una)) {
+            // print value
+            EV_DETAIL << "Round-trip time measured on rtseq=" << state->rtseq << ": "
+                      << floor((simTime() - state->rtseq_sendtime) * 1000 + 0.5) << "ms\n";
+
+            rttMeasurementComplete(state->rtseq_sendtime, simTime()); // update RTT variables with new value
+
+            // measurement finished
+            state->rtseq_sendtime = 0;
+        }
+    }
+
+    //
+  
+    //
+    // handling of PERSIST timer:
+    // If data sender received a zero-sized window, check retransmission timer.
+    //  If retransmission timer is not scheduled, start PERSIST timer if not already
+    //  running.
+    //
+    // If data sender received a non zero-sized window, check PERSIST timer.
+    //  If PERSIST timer is scheduled, cancel PERSIST timer.
+    //INFO (TcpConnection)i7refbottle.snd.tcp.conn-6: Duplicate ACK #3
+    if (state->snd_wnd == 0) { // received zero-sized window?
+        if (rexmitTimer->isScheduled()) {
+            if (persistTimer->isScheduled()) {
+                EV_INFO << "Received zero-sized window and REXMIT timer is running therefore PERSIST timer is canceled.\n";
+                cancelEvent(persistTimer);
+                state->persist_factor = 0;
+            }
+            else
+                EV_INFO << "Received zero-sized window and REXMIT timer is running therefore PERSIST timer is not started.\n";
+        }
+        else {
+            if (!persistTimer->isScheduled()) {
+                EV_INFO << "Received zero-sized window therefore PERSIST timer is started.\n";
+                conn->scheduleAfter(state->persist_timeout, persistTimer);
+            }
+            else
+                EV_INFO << "Received zero-sized window and PERSIST timer is already running.\n";
+        }
+    }
+    else { // received non zero-sized window?
+        if (persistTimer->isScheduled()) {
+            EV_INFO << "Received non zero-sized window therefore PERSIST timer is canceled.\n";
+            cancelEvent(persistTimer);
+            state->persist_factor = 0;
+        }
+    }
+    // srg c v end
+
 
     const TcpSegmentTransmitInfoList::Item *found = state->regions.get(firstSeqAcked);
 
@@ -279,6 +370,11 @@ void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
         {
             state->c_dMin = rtt;
         }
+    }
+
+    // reset inhibiting the next recovery pahse
+    if(state->inhibitRecovery && !state->lossRecovery && seqGE(state->snd_una, state->recover + state->snd_mss)){
+        state->inhibitRecovery = false;
     }
 
     if (state->lossRecovery) {
@@ -359,7 +455,7 @@ void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
     else
     {
         // Perform slow start and congestion avoidance.
-        performSSCA();
+        performSSCA(firstSeqAcked);
 
         // RFC 3782, page 13:
         // "When not in Fast Recovery, the value of the state variable "recover"
@@ -368,7 +464,11 @@ void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
         // data have been sent and acked, the sequence space does not wrap and
         // falsely indicate that Fast Recovery should not be entered (Section 3,
         // step 1, last paragraph)."
-        state->recover = (state->snd_una - 2);
+        //
+        // this should not be done after RTOs
+        if (!state->inhibitRecovery){
+            state->recover = (state->snd_una - 2);
+        }
 
     }
 
