@@ -40,7 +40,7 @@ class INET_API TcpCubic : public TcpBaseAlg
 
         virtual void initialize() override;
 
-        void performSSCA();
+        void performSSCA(uint32_t firstSeqAcked);
 
         void cubic_reset();
 

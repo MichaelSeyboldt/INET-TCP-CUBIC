@@ -229,7 +229,7 @@ void TcpCubic::cubic_update()
 }
 
 
-void TcpCubic::performSSCA()
+void TcpCubic::performSSCA(uint32_t firstSeqAcked)
 {
     if (state->snd_cwnd <= state->ssthresh) {
         EV_DETAIL << "cwnd <= ssthresh: Slow Start: increasing cwnd by SMSS bytes to ";
@@ -455,7 +455,7 @@ void TcpCubic::receivedDataAck(uint32_t firstSeqAcked)
     else
     {
         // Perform slow start and congestion avoidance.
-        performSSCA();
+        performSSCA(firstSeqAcked);
 
         // RFC 3782, page 13:
         // "When not in Fast Recovery, the value of the state variable "recover"
